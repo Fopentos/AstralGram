@@ -6,7 +6,7 @@ import random
 import string
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, ForeignKey, BigInteger, func
@@ -24,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN not set")
 
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()] if os.getenv("ADMIN_IDS") else []
 SUPPORT_LINK = os.getenv("SUPPORT_LINK", "https://t.me/your_support")
 RULES_LINK = os.getenv("RULES_LINK", "https://telegra.ph/Rules-05-09")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///promo_bot.db")
@@ -50,7 +50,7 @@ class User(Base):
     username = Column(String)
     first_name = Column(String)
     balance = Column(Integer, default=0)
-    earned_balance = Column(Integer, default=0)   # сколько заработано (для комиссии)
+    earned_balance = Column(Integer, default=0)
     referral_code = Column(String, unique=True)
     referred_by = Column(BigInteger, nullable=True)
     level = Column(Integer, default=1)
@@ -75,8 +75,8 @@ class Task(Base):
     __tablename__ = "tasks"
     id = Column(Integer, primary_key=True)
     type = Column(String, nullable=False)   # channel, group, post, bot, boost, reaction
-    target_id = Column(String)              # id канала/группы
-    target_name = Column(String)            # название или username
+    target_id = Column(String)
+    target_name = Column(String)
     reward = Column(Integer, nullable=False)
     max_completions = Column(Integer, default=50)
     current_completions = Column(Integer, default=0)
@@ -85,7 +85,7 @@ class Task(Base):
     creator_id = Column(BigInteger, ForeignKey("users.user_id"))
     created_at = Column(DateTime, default=datetime.now)
     expires_at = Column(DateTime, nullable=False)
-    extra_data = Column(Text, nullable=True)   # ссылка на пост, тип реакции и т.д.
+    extra_data = Column(Text, nullable=True)
 
 class TaskCompletion(Base):
     __tablename__ = "task_completions"
@@ -118,7 +118,7 @@ class Transaction(Base):
 class Check(Base):
     __tablename__ = "checks"
     id = Column(Integer, primary_key=True)
-    type = Column(String)   # personal, multi
+    type = Column(String)
     owner_id = Column(BigInteger, ForeignKey("users.user_id"))
     amount = Column(Integer)
     total_amount = Column(Integer)
@@ -181,7 +181,6 @@ def add_xp(user_id: int, xp: int):
         session.commit()
     session.close()
 
-# ----------------------------- КЛАВИАТУРЫ -----------------------------
 def main_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 Заработать", callback_data="earn")],
@@ -190,8 +189,8 @@ def main_keyboard():
         [InlineKeyboardButton("👤 Мой кабинет", callback_data="cabinet")]
     ])
 
-def back_keyboard(callback_data: str = "main_menu"):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=callback_data)]])
+def back_keyboard(callback: str = "main_menu"):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=callback)]])
 
 # ----------------------------- ОСНОВНОЙ БОТ -----------------------------
 class PromoBot:
@@ -217,7 +216,7 @@ class PromoBot:
             session.commit()
             if referrer:
                 referrer.balance += REFERRAL_BONUS
-                add_transaction(referrer.user_id, REFERRAL_BONUS, "referral", f"Приглашён {user.id}")
+                add_transaction(referrer.user_id, REFERRAL_BONUS, "referral", f"Пригласил {user.id}")
                 session.commit()
         session.close()
         bot_username = context.bot.username or "YourBot"
@@ -241,39 +240,36 @@ class PromoBot:
             "• /start – главное меню\n"
             "• /stats – статистика бота\n"
             "• /rules – правила\n"
-            "• /support – поддержка\n\n"
+            "• /support – поддержка\n"
+            "• /claim <код> – активировать чек\n\n"
             "Все основные функции доступны через кнопки под сообщениями.",
             parse_mode="Markdown"
         )
 
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         session = Session()
-        users_count = session.query(User).count()
-        active_tasks = session.query(Task).filter(Task.is_active == True, Task.expires_at > datetime.now()).count()
-        total_balance = session.query(func.sum(User.balance)).scalar() or 0
+        users = session.query(User).count()
+        active = session.query(Task).filter(Task.is_active == True, Task.expires_at > datetime.now()).count()
+        total_bal = session.query(func.sum(User.balance)).scalar() or 0
         session.close()
         await update.message.reply_text(
-            f"📊 *Статистика бота*\n\n"
-            f"👥 Пользователей: {users_count}\n"
-            f"📢 Активных заданий: {active_tasks}\n"
-            f"💰 Всего монет: {total_balance} {CURRENCY}",
+            f"📊 *Статистика*\n👥 Пользователей: {users}\n📢 Активных заданий: {active}\n💰 Всего монет: {total_bal} {CURRENCY}",
             parse_mode="Markdown"
         )
 
     async def rules_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(f"📜 *Правила использования:*\n{RULES_LINK}", parse_mode="Markdown")
+        await update.message.reply_text(f"📜 *Правила:* {RULES_LINK}", parse_mode="Markdown")
 
     async def support_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"🛠 *Поддержка:* {SUPPORT_LINK}", parse_mode="Markdown")
 
     # ----------------------------- ОБРАБОТЧИКИ МЕНЮ -----------------------------
-    async def main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def main_menu_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-        user_id = query.from_user.id
-        user = get_user(user_id)
+        user = get_user(query.from_user.id)
         await query.edit_message_text(
-            f"🏠 *Главное меню*\n\n💰 Баланс: {user.balance} {CURRENCY}\n⭐ Уровень: {user.level} (XP: {user.xp}/{user.level*XP_LEVEL_BASE})",
+            f"🏠 *Главное меню*\n💰 Баланс: {user.balance} {CURRENCY}\n⭐ Уровень: {user.level} (XP: {user.xp}/{user.level*XP_LEVEL_BASE})",
             parse_mode="Markdown",
             reply_markup=main_keyboard()
         )
@@ -282,11 +278,9 @@ class PromoBot:
         query = update.callback_query
         await query.answer()
         session = Session()
-        counts = {}
-        for t in ["channel", "group", "post", "reaction", "bot", "boost"]:
-            cnt = session.query(Task).filter(Task.type == t, Task.is_active == True, Task.is_paused == False,
-                                             Task.expires_at > datetime.now()).count()
-            counts[t] = cnt
+        counts = {t: session.query(Task).filter(Task.type == t, Task.is_active == True, Task.is_paused == False,
+                                               Task.expires_at > datetime.now()).count()
+                  for t in ["channel", "group", "post", "reaction", "bot", "boost"]}
         session.close()
         text = (
             f"👨‍💻 *Заработать*\n\n"
@@ -309,10 +303,11 @@ class PromoBot:
         ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    async def show_tasks_by_type(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_type: str):
+    async def show_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_type: str):
         query = update.callback_query
         await query.answer()
-        page = context.user_data.get(f"{task_type}_page", 0)
+        page_key = f"{task_type}_page"
+        page = context.user_data.get(page_key, 0)
         session = Session()
         tasks = session.query(Task).filter(
             Task.type == task_type,
@@ -321,39 +316,32 @@ class PromoBot:
             Task.expires_at > datetime.now(),
             Task.current_completions < Task.max_completions
         ).order_by(Task.reward.desc()).all()
-        total_pages = (len(tasks) + MAX_TASKS_PER_PAGE - 1) // MAX_TASKS_PER_PAGE
+        total = (len(tasks) + MAX_TASKS_PER_PAGE - 1) // MAX_TASKS_PER_PAGE
         start = page * MAX_TASKS_PER_PAGE
-        tasks_page = tasks[start:start+MAX_TASKS_PER_PAGE]
-        if not tasks_page:
+        page_tasks = tasks[start:start+MAX_TASKS_PER_PAGE]
+        if not page_tasks:
             await query.edit_message_text("Нет заданий этого типа.", reply_markup=back_keyboard("earn"))
             session.close()
             return
-        warning = ""
-        if task_type in ("channel", "group", "bot"):
-            warning = ("⚠️ *Запрещено отписываться ранее чем через 7 дней!*\n"
-                       "Нарушители будут заблокированы, а заработанные средства аннулированы.\n\n")
+        warning = "⚠️ *Запрещено отписываться ранее 7 дней!*\n\n" if task_type in ("channel","group","bot") else ""
         keyboard = []
-        for task in tasks_page:
-            if task_type in ("channel", "group", "bot"):
-                url = task.extra_data if task.extra_data else f"https://t.me/{task.target_name}"
+        for t in page_tasks:
+            if task_type in ("channel","group","bot"):
+                url = t.extra_data if t.extra_data else f"https://t.me/{t.target_name}"
                 keyboard.append([
-                    InlineKeyboardButton(f"💰 {task.reward}{CURRENCY} | {task.target_name}", url=url),
-                    InlineKeyboardButton("✅ Проверить", callback_data=f"verify_sub_{task.id}")
+                    InlineKeyboardButton(f"💰 {t.reward}{CURRENCY} | {t.target_name}", url=url),
+                    InlineKeyboardButton("✅ Проверить", callback_data=f"verify_sub_{t.id}")
                 ])
             elif task_type == "post":
-                keyboard.append([InlineKeyboardButton(f"👁 {task.target_name} | {task.reward}{CURRENCY}",
-                                                     callback_data=f"do_view_{task.id}")])
+                keyboard.append([InlineKeyboardButton(f"👁 {t.target_name} | {t.reward}{CURRENCY}", callback_data=f"do_view_{t.id}")])
             elif task_type == "reaction":
-                keyboard.append([InlineKeyboardButton(f"🔥 {task.target_name} | {task.reward}{CURRENCY}",
-                                                     callback_data=f"do_reaction_{task.id}")])
+                keyboard.append([InlineKeyboardButton(f"🔥 {t.target_name} | {t.reward}{CURRENCY}", callback_data=f"do_reaction_{t.id}")])
             elif task_type == "boost":
-                keyboard.append([InlineKeyboardButton(f"⚡ {task.target_name} | {task.reward}{CURRENCY}",
-                                                     callback_data=f"do_boost_{task.id}")])
-        # пагинация
+                keyboard.append([InlineKeyboardButton(f"⚡ {t.target_name} | {t.reward}{CURRENCY}", callback_data=f"do_boost_{t.id}")])
         nav = []
         if page > 0:
             nav.append(InlineKeyboardButton("◀️", callback_data=f"tasks_{task_type}_prev"))
-        if page < total_pages - 1:
+        if page < total - 1:
             nav.append(InlineKeyboardButton("▶️", callback_data=f"tasks_{task_type}_next"))
         if nav:
             keyboard.append(nav)
@@ -361,7 +349,7 @@ class PromoBot:
         await query.edit_message_text(warning, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         session.close()
 
-    async def paginate_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_type: str, direction: str):
+    async def tasks_paginate(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_type: str, direction: str):
         query = update.callback_query
         await query.answer()
         key = f"{task_type}_page"
@@ -371,137 +359,120 @@ class PromoBot:
         else:
             page = max(0, page - 1)
         context.user_data[key] = page
-        await self.show_tasks_by_type(update, context, task_type)
+        await self.show_tasks(update, context, task_type)
 
     # ----------------------------- ПРОВЕРКА ПОДПИСОК И ВЫПОЛНЕНИЕ -----------------------------
-    async def verify_subscription(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
+    async def verify_sub(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
         query = update.callback_query
         user_id = query.from_user.id
         session = Session()
-        task = session.query(Task).filter_by(id=task_id, is_active=True).first()
-        if not task or task.expires_at < datetime.now():
+        task = session.query(Task).filter_by(id=task_id).first()
+        if not task or not task.is_active or task.expires_at < datetime.now():
             await query.answer("Задание неактивно", show_alert=True)
             session.close()
             return
-        existing = session.query(TaskCompletion).filter_by(task_id=task_id, user_id=user_id).first()
-        if existing:
+        if session.query(TaskCompletion).filter_by(task_id=task_id, user_id=user_id).first():
             await query.answer("Вы уже выполняли это задание", show_alert=True)
             session.close()
             return
         try:
-            if task.type in ("channel", "group"):
-                member = await context.bot.get_chat_member(chat_id=int(task.target_id), user_id=user_id)
-                if member.status not in ("member", "administrator", "creator"):
-                    await query.answer("❌ Вы не подписаны!", show_alert=True)
+            if task.type in ("channel","group"):
+                member = await context.bot.get_chat_member(int(task.target_id), user_id)
+                if member.status not in ("member","administrator","creator"):
+                    await query.answer("❌ Вы не подписаны", show_alert=True)
                     session.close()
                     return
-            elif task.type == "bot":
-                # бот не проверяем, считаем что пользователь нажал кнопку
-                pass
+            # для ботов просто считаем, что подписан
         except BadRequest:
-            await query.answer("Не удалось проверить подписку", show_alert=True)
+            await query.answer("Не удалось проверить", show_alert=True)
             session.close()
             return
-        # начисляем награду
-        reward = task.reward
-        update_balance(user_id, reward, is_earned=True)
-        add_transaction(user_id, reward, "task_reward", f"Выполнение {task.type} {task.target_name}")
+        update_balance(user_id, task.reward, is_earned=True)
+        add_transaction(user_id, task.reward, "task_reward", f"Выполнение {task.type} {task.target_name}")
         completion = TaskCompletion(task_id=task_id, user_id=user_id, is_verified=True)
         session.add(completion)
         task.current_completions += 1
-        if task.type in ("channel", "group"):
-            sub = Subscription(user_id=user_id, channel_id=str(task.target_id), task_id=task_id,
+        if task.type in ("channel","group"):
+            sub = Subscription(user_id=user_id, channel_id=task.target_id, task_id=task_id,
                                check_until=datetime.now() + timedelta(days=UNSUBSCRIBE_BAN_DAYS))
             session.add(sub)
         session.commit()
         add_xp(user_id, XP_PER_TASK)
-        await query.edit_message_text(
-            f"✅ Задание выполнено! +{reward} {CURRENCY}\n"
-            f"⚠️ Не отписывайтесь минимум 7 дней."
-        )
+        await query.edit_message_text(f"✅ Выполнено! +{task.reward}{CURRENCY}\n⚠️ Не отписывайтесь 7 дней.")
         session.close()
 
-    async def handle_view_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
+    async def do_view(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
         query = update.callback_query
         user_id = query.from_user.id
         session = Session()
-        task = session.query(Task).filter_by(id=task_id, is_active=True).first()
-        if not task:
+        task = session.query(Task).filter_by(id=task_id).first()
+        if not task or not task.is_active:
             await query.answer("Задание неактивно", show_alert=True)
             session.close()
             return
-        existing = session.query(TaskCompletion).filter_by(task_id=task_id, user_id=user_id).first()
-        if existing:
+        if session.query(TaskCompletion).filter_by(task_id=task_id, user_id=user_id).first():
             await query.answer("Уже выполняли", show_alert=True)
             session.close()
             return
-        context.user_data[f"pending_view_{user_id}"] = task_id
+        context.user_data[f"pending_{task_id}_{user_id}"] = task_id
         await query.edit_message_text(
-            f"👁 *Просмотр*\n\n"
-            f"Перейдите по ссылке и посмотрите:\n{task.extra_data}\n\n"
-            f"После просмотра отправьте скриншот в этот чат.\n"
-            f"Награда: {task.reward}{CURRENCY}",
+            f"👁 *Просмотр*\n\nПерейдите по ссылке и посмотрите:\n{task.extra_data}\n\n"
+            f"Отправьте скриншот.\nНаграда: {task.reward}{CURRENCY}",
             parse_mode="Markdown",
             reply_markup=back_keyboard("earn")
         )
         session.close()
 
-    async def handle_reaction_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
+    async def do_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
         query = update.callback_query
         user_id = query.from_user.id
         session = Session()
-        task = session.query(Task).filter_by(id=task_id, is_active=True).first()
-        if not task:
+        task = session.query(Task).filter_by(id=task_id).first()
+        if not task or not task.is_active:
             await query.answer("Задание неактивно", show_alert=True)
             session.close()
             return
-        existing = session.query(TaskCompletion).filter_by(task_id=task_id, user_id=user_id).first()
-        if existing:
+        if session.query(TaskCompletion).filter_by(task_id=task_id, user_id=user_id).first():
             await query.answer("Уже выполняли", show_alert=True)
             session.close()
             return
-        context.user_data[f"pending_reaction_{user_id}"] = task_id
+        context.user_data[f"pending_{task_id}_{user_id}"] = task_id
         await query.edit_message_text(
-            f"🔥 *Реакция*\n\n"
-            f"Поставьте реакцию под постом:\n{task.extra_data}\n\n"
-            f"Отправьте скриншот с реакцией.\n"
-            f"Награда: {task.reward}{CURRENCY}",
+            f"🔥 *Реакция*\n\nПоставьте реакцию под постом:\n{task.extra_data}\n\n"
+            f"Отправьте скриншот.\nНаграда: {task.reward}{CURRENCY}",
             parse_mode="Markdown",
             reply_markup=back_keyboard("earn")
         )
         session.close()
 
-    async def handle_boost_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
+    async def do_boost(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
         query = update.callback_query
         user_id = query.from_user.id
         session = Session()
-        task = session.query(Task).filter_by(id=task_id, is_active=True).first()
-        if not task:
+        task = session.query(Task).filter_by(id=task_id).first()
+        if not task or not task.is_active:
             await query.answer("Задание неактивно", show_alert=True)
             session.close()
             return
-        context.user_data[f"pending_boost_{user_id}"] = task_id
+        context.user_data[f"pending_{task_id}_{user_id}"] = task_id
         await query.edit_message_text(
-            f"⚡ *Буст*\n\n"
-            f"Сделайте премиум-буст канала: https://t.me/{task.target_name}\n\n"
-            f"Отправьте скриншот подтверждения.\n"
-            f"Награда: {task.reward}{CURRENCY}",
+            f"⚡ *Буст*\n\nСделайте буст канала: https://t.me/{task.target_name}\n\n"
+            f"Отправьте скриншот.\nНаграда: {task.reward}{CURRENCY}",
             parse_mode="Markdown",
             reply_markup=back_keyboard("earn")
         )
         session.close()
 
-    # ----------------------------- ПРИЁМ СКРИНШОТОВ -----------------------------
+    # ----------------------------- ПРИЁМ ФОТО -----------------------------
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         task_id = None
         for key in list(context.user_data.keys()):
             if key.startswith("pending_") and key.endswith(str(user_id)):
-                task_id = context.user_data[key]
-                del context.user_data[key]
+                task_id = context.user_data.pop(key)
                 break
         if not task_id:
-            await update.message.reply_text("Я не ожидал скриншот. Начните задание заново.")
+            await update.message.reply_text("Неожиданный скриншот. Начните задание заново через меню.")
             return
         session = Session()
         task = session.query(Task).filter_by(id=task_id).first()
@@ -513,23 +484,23 @@ class PromoBot:
                                     screenshot_message_id=update.message.message_id)
         session.add(completion)
         session.commit()
-        # уведомляем владельца задания
+        # Отправляем владельцу
         try:
             await context.bot.send_photo(
                 chat_id=task.creator_id,
                 photo=update.message.photo[-1].file_id,
-                caption=f"📸 Новое выполнение задания #{task.id}\nОт: @{update.effective_user.username or user_id}\nНаграда: {task.reward}{CURRENCY}",
+                caption=f"📸 Новое выполнение #{task_id}\nОт @{update.effective_user.username or user_id}\nНаграда: {task.reward}{CURRENCY}",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{completion.id}"),
                      InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{completion.id}")]
                 ])
             )
-            await update.message.reply_text("✅ Скриншот отправлен на проверку. Ожидайте одобрения.")
+            await update.message.reply_text("✅ Скриншот отправлен на проверку. Ожидайте.")
         except Exception:
-            await update.message.reply_text("Ошибка при отправке владельцу. Попробуйте позже.")
+            await update.message.reply_text("Ошибка отправки владельцу.")
         session.close()
 
-    async def approve_completion(self, update: Update, context: ContextTypes.DEFAULT_TYPE, completion_id: int):
+    async def approve_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE, completion_id: int):
         query = update.callback_query
         await query.answer()
         session = Session()
@@ -543,49 +514,48 @@ class PromoBot:
             await query.edit_message_text("Задание не найдено")
             session.close()
             return
-        reward = task.reward
-        update_balance(comp.user_id, reward, is_earned=True)
-        add_transaction(comp.user_id, reward, "task_reward", f"Одобрено {task.type}")
+        update_balance(comp.user_id, task.reward, is_earned=True)
+        add_transaction(comp.user_id, task.reward, "task_reward", f"Одобрено {task.type}")
         comp.is_verified = True
         comp.approved_at = datetime.now()
         task.current_completions += 1
-        if task.type in ("channel", "group"):
+        if task.type in ("channel","group"):
             sub = Subscription(user_id=comp.user_id, channel_id=task.target_id, task_id=task.id,
                                check_until=datetime.now() + timedelta(days=UNSUBSCRIBE_BAN_DAYS))
             session.add(sub)
         session.commit()
         add_xp(comp.user_id, XP_PER_TASK)
-        await query.edit_message_text(f"✅ Задание одобрено. Пользователь получил {reward}{CURRENCY}.")
+        await query.edit_message_text(f"✅ Одобрено. Пользователь получил {task.reward}{CURRENCY}.")
         try:
-            await context.bot.send_message(comp.user_id, f"✅ Ваше задание #{task.id} одобрено! +{reward}{CURRENCY}")
+            await context.bot.send_message(comp.user_id, f"✅ Ваше задание #{task.id} одобрено! +{task.reward}{CURRENCY}")
         except:
             pass
         session.close()
 
-    async def reject_completion(self, update: Update, context: ContextTypes.DEFAULT_TYPE, completion_id: int):
+    async def reject_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE, completion_id: int):
         query = update.callback_query
         await query.answer()
         session = Session()
         comp = session.query(TaskCompletion).filter_by(id=completion_id).first()
-        if not comp or comp.is_verified:
-            await query.edit_message_text("Уже обработано")
+        if not comp:
+            await query.edit_message_text("Не найдено")
             session.close()
             return
         session.delete(comp)
         session.commit()
-        await query.edit_message_text("❌ Выполнение отклонено. Пользователь может повторить.")
+        await query.edit_message_text("❌ Отклонено.")
         try:
-            await context.bot.send_message(comp.user_id, f"❌ Ваше задание отклонено. Попробуйте снова.")
+            await context.bot.send_message(comp.user_id, "❌ Ваше задание отклонено. Можете попробовать снова.")
         except:
             pass
         session.close()
 
-    # ----------------------------- РЕКЛАМИРОВАТЬ (СОЗДАНИЕ ЗАДАНИЙ) -----------------------------
-    async def advertise_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ----------------------------- РЕКЛАМИРОВАТЬ (СОЗДАНИЕ) -----------------------------
+    async def advertise_menu_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         user = get_user(query.from_user.id)
-        text = f"📢 Что рекламировать?\n💰 Баланс: {user.balance} {CURRENCY}"
+        text = f"📢 *Что рекламировать?*\n💰 Баланс: {user.balance} {CURRENCY}"
         keyboard = [
             [InlineKeyboardButton("📺 Канал", callback_data="ad_channel")],
             [InlineKeyboardButton("👥 Группа", callback_data="ad_group")],
@@ -595,26 +565,24 @@ class PromoBot:
             [InlineKeyboardButton("🔥 Реакции", callback_data="ad_reaction")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    async def start_ad_creation(self, update: Update, context: ContextTypes.DEFAULT_TYPE, ad_type: str):
+    async def ad_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE, ad_type: str):
         query = update.callback_query
         await query.answer()
         context.user_data["ad_type"] = ad_type
-        await query.edit_message_text("Введите ссылку на ресурс (или @username):", reply_markup=back_keyboard("advertise"))
+        await query.edit_message_text("Введите ссылку или @username:", reply_markup=back_keyboard("advertise"))
         return "awaiting_target"
 
-    async def receive_target(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def ad_target(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         ad_type = context.user_data.get("ad_type")
         if not ad_type:
-            await update.message.reply_text("Начните заново через Рекламировать.")
+            await update.message.reply_text("Ошибка, начните сначала.")
             return ConversationHandler.END
         target = update.message.text.strip()
-        # обработка ссылки
-        if ad_type in ("channel", "group", "bot", "boost"):
-            # извлекаем username
+        if ad_type in ("channel","group","bot","boost"):
             if target.startswith("https://t.me/"):
-                username = target.split("https://t.me/")[-1].replace("/", "")
+                username = target.split("https://t.me/")[-1].replace("/","")
             elif target.startswith("@"):
                 username = target[1:]
             else:
@@ -622,25 +590,24 @@ class PromoBot:
             context.user_data["target_name"] = username
             context.user_data["target_id"] = username
             context.user_data["extra_data"] = f"https://t.me/{username}"
-            if ad_type in ("channel", "group"):
+            if ad_type in ("channel","group"):
                 try:
                     chat = await context.bot.get_chat(username)
                     member = await context.bot.get_chat_member(chat.id, context.bot.id)
-                    if member.status not in ("administrator", "creator"):
+                    if member.status not in ("administrator","creator"):
                         await update.message.reply_text("❌ Бот не администратор! Добавьте бота и выдайте права.")
                         return ConversationHandler.END
                     context.user_data["target_id"] = str(chat.id)
                 except Exception:
-                    await update.message.reply_text("Не удалось проверить права бота. Убедитесь, что бот админ.")
+                    await update.message.reply_text("Не удалось проверить права бота.")
                     return ConversationHandler.END
         else:
-            # для постов и реакций просто сохраняем ссылку
             context.user_data["target_name"] = target
             context.user_data["extra_data"] = target
-        await update.message.reply_text("Введите награду за выполнение (число, 1–1000):")
+        await update.message.reply_text("Введите награду (число 1-1000):")
         return "awaiting_reward"
 
-    async def receive_reward(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def ad_reward(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             reward = int(update.message.text)
             if reward < 1 or reward > 1000:
@@ -649,20 +616,20 @@ class PromoBot:
             await update.message.reply_text("Введите число от 1 до 1000.")
             return "awaiting_reward"
         context.user_data["reward"] = reward
-        await update.message.reply_text("Введите максимальное количество выполнений (1–1000):")
+        await update.message.reply_text("Введите максимальное количество выполнений (1-1000):")
         return "awaiting_max"
 
-    async def receive_max(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def ad_max(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
-            max_completions = int(update.message.text)
-            if max_completions < 1 or max_completions > 1000:
+            maxc = int(update.message.text)
+            if maxc < 1 or maxc > 1000:
                 raise ValueError
         except ValueError:
             await update.message.reply_text("Введите число от 1 до 1000.")
             return "awaiting_max"
         ad_type = context.user_data["ad_type"]
         reward = context.user_data["reward"]
-        total = reward * max_completions
+        total = reward * maxc
         user_id = update.effective_user.id
         user = get_user(user_id)
         commission = 0
@@ -670,17 +637,17 @@ class PromoBot:
             commission = int(total * COMMISSION_RATE)
         total_needed = total + commission
         if user.balance < total_needed:
-            await update.message.reply_text(f"❌ Недостаточно средств. Нужно {total_needed} {CURRENCY}, у вас {user.balance}.")
+            await update.message.reply_text(f"❌ Недостаточно средств. Нужно {total_needed}{CURRENCY}, у вас {user.balance}.")
             return ConversationHandler.END
         update_balance(user_id, -total_needed)
-        add_transaction(user_id, -total_needed, "task_creation", f"Создание {ad_type} задания")
+        add_transaction(user_id, -total_needed, "task_creation", f"Создание {ad_type}")
         session = Session()
         task = Task(
             type=ad_type,
-            target_id=context.user_data.get("target_id", ""),
+            target_id=context.user_data.get("target_id",""),
             target_name=context.user_data["target_name"],
             reward=reward,
-            max_completions=max_completions,
+            max_completions=maxc,
             creator_id=user_id,
             expires_at=datetime.now() + timedelta(days=TASK_DURATION_DAYS),
             extra_data=context.user_data["extra_data"]
@@ -689,16 +656,14 @@ class PromoBot:
         session.commit()
         session.close()
         await update.message.reply_text(
-            f"✅ Задание создано!\n"
-            f"Тип: {ad_type}, Цель: {context.user_data['target_name']}\n"
-            f"Награда: {reward}{CURRENCY}, Макс: {max_completions}\n"
-            f"Списано: {total_needed}{CURRENCY} (комиссия {commission}{CURRENCY})"
+            f"✅ Задание создано!\nТип: {ad_type}\nЦель: {context.user_data['target_name']}\n"
+            f"Награда: {reward}{CURRENCY}\nМакс: {maxc}\nСписано: {total_needed}{CURRENCY} (комиссия {commission}{CURRENCY})"
         )
         context.user_data.clear()
         return ConversationHandler.END
 
     # ----------------------------- ЧЕКИ -----------------------------
-    async def checks_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def checks_menu_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         keyboard = [
@@ -706,46 +671,40 @@ class PromoBot:
             [InlineKeyboardButton("👥 Мульти-чек", callback_data="create_multi_check")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
-        await query.edit_message_text(
-            "💸 *Чеки*\n\n"
-            "• Персональный – перевод одному пользователю\n"
-            "• Мульти-чек – перевод нескольким (можно с условием подписки)",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+        await query.edit_message_text("💸 *Чеки*\n\n• Персональный – перевод одному\n• Мульти-чек – перевод нескольким (с подпиской)", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    async def create_personal_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def check_create_personal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         context.user_data["check_type"] = "personal"
         await query.edit_message_text("Введите сумму чека (целое число):", reply_markup=back_keyboard("checks_menu"))
         return "await_check_amount"
 
-    async def create_multi_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def check_create_multi(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         context.user_data["check_type"] = "multi"
         await query.edit_message_text("Введите сумму для каждого получателя:", reply_markup=back_keyboard("checks_menu"))
         return "await_check_amount"
 
-    async def receive_check_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def check_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             amount = int(update.message.text)
-            if amount < 1:
+            if amount <= 0:
                 raise ValueError
         except ValueError:
             await update.message.reply_text("Введите положительное число.")
             return "await_check_amount"
         context.user_data["check_amount"] = amount
-        check_type = context.user_data["check_type"]
-        if check_type == "personal":
+        typ = context.user_data["check_type"]
+        if typ == "personal":
             await update.message.reply_text("Введите ID получателя (число):")
             return "await_personal_recipient"
         else:
             await update.message.reply_text("Введите количество получателей (макс 100):")
             return "await_multi_count"
 
-    async def receive_personal_recipient(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def check_personal_recipient(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             recipient = int(update.message.text)
         except ValueError:
@@ -760,23 +719,21 @@ class PromoBot:
             session.close()
             return ConversationHandler.END
         code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-        check = Check(
-            type="personal", owner_id=user_id, amount=amount, total_amount=amount,
-            remaining=amount, max_uses=1, code=code
-        )
+        check = Check(type="personal", owner_id=user_id, amount=amount, total_amount=amount,
+                      remaining=amount, max_uses=1, code=code)
         session.add(check)
         user.balance -= amount
-        add_transaction(user_id, -amount, "check_creation", f"Персональный чек на {amount}")
+        add_transaction(user_id, -amount, "check_creation", f"Персональный чек {code}")
         session.commit()
         session.close()
         await update.message.reply_text(
-            f"✅ Чек создан!\nСумма: {amount}{CURRENCY}\nКод: `{code}`\nПолучатель: /claim {code}",
+            f"✅ Персональный чек создан!\nСумма: {amount}{CURRENCY}\nКод: `{code}`\nПолучатель: /claim {code}",
             parse_mode="Markdown"
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    async def receive_multi_count(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def check_multi_count(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             count = int(update.message.text)
             if count < 1 or count > 100:
@@ -785,29 +742,28 @@ class PromoBot:
             await update.message.reply_text("Введите число от 1 до 100.")
             return "await_multi_count"
         context.user_data["multi_count"] = count
-        await update.message.reply_text("Введите ссылку на канал (условие подписки) или 0, если без условия:")
+        await update.message.reply_text("Введите ссылку на канал (условие подписки) или 0 (без условия):")
         return "await_multi_channel"
 
-    async def receive_multi_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        channel_input = update.message.text.strip()
-        required_channel = None
-        if channel_input != "0":
-            # извлекаем username
-            if channel_input.startswith("https://t.me/"):
-                username = channel_input.split("https://t.me/")[-1].replace("/", "")
-            elif channel_input.startswith("@"):
-                username = channel_input[1:]
+    async def check_multi_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        ch_input = update.message.text.strip()
+        required = None
+        if ch_input != "0":
+            if ch_input.startswith("https://t.me/"):
+                username = ch_input.split("https://t.me/")[-1].replace("/","")
+            elif ch_input.startswith("@"):
+                username = ch_input[1:]
             else:
-                username = channel_input
+                username = ch_input
             try:
                 chat = await context.bot.get_chat(username)
                 member = await context.bot.get_chat_member(chat.id, context.bot.id)
-                if member.status not in ("administrator", "creator"):
-                    await update.message.reply_text("❌ Бот не администратор канала. Добавьте бота или введите 0.")
+                if member.status not in ("administrator","creator"):
+                    await update.message.reply_text("❌ Бот не администратор канала. Добавьте или введите 0.")
                     return "await_multi_channel"
-                required_channel = str(chat.id)
+                required = str(chat.id)
             except Exception:
-                await update.message.reply_text("Не удалось проверить канал. Введите 0 или корректную ссылку.")
+                await update.message.reply_text("Не удалось проверить канал. Повторите или введите 0.")
                 return "await_multi_channel"
         amount = context.user_data["check_amount"]
         count = context.user_data["multi_count"]
@@ -820,28 +776,22 @@ class PromoBot:
             session.close()
             return ConversationHandler.END
         code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-        check = Check(
-            type="multi", owner_id=user_id, amount=amount, total_amount=total,
-            remaining=total, max_uses=count, required_channel=required_channel, code=code
-        )
+        check = Check(type="multi", owner_id=user_id, amount=amount, total_amount=total, remaining=total,
+                      max_uses=count, required_channel=required, code=code)
         session.add(check)
         user.balance -= total
-        add_transaction(user_id, -total, "check_creation", f"Мульти-чек на {count} чел.")
+        add_transaction(user_id, -total, "check_creation", f"Мульти-чек {code}")
         session.commit()
         session.close()
         await update.message.reply_text(
-            f"✅ Мульти-чек создан!\n"
-            f"Сумма на каждого: {amount}{CURRENCY}\n"
-            f"Кол-во: {count}\n"
-            f"Условие: {'подписка на канал' if required_channel else 'нет'}\n"
-            f"Код: `{code}`\n"
-            f"Активация: /claim {code}",
+            f"✅ Мульти-чек создан!\nСумма на каждого: {amount}{CURRENCY}\nКол-во: {count}\n"
+            f"Условие: {'подписка на канал' if required else 'нет'}\nКод: `{code}`\nАктивация: /claim {code}",
             parse_mode="Markdown"
         )
         context.user_data.clear()
         return ConversationHandler.END
 
-    async def claim_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def claim_check_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         args = context.args
         if not args:
             await update.message.reply_text("Использование: /claim <код>")
@@ -861,7 +811,7 @@ class PromoBot:
         if check.required_channel:
             try:
                 member = await context.bot.get_chat_member(int(check.required_channel), user_id)
-                if member.status not in ("member", "administrator", "creator"):
+                if member.status not in ("member","administrator","creator"):
                     await update.message.reply_text("❌ Вы не подписаны на требуемый канал.")
                     session.close()
                     return
@@ -884,36 +834,36 @@ class PromoBot:
         await update.message.reply_text(f"✅ Вы получили {check.amount} {CURRENCY} по чеку {code}!")
         session.close()
 
-    # ----------------------------- МОЙ КАБИНЕТ -----------------------------
-    async def cabinet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ----------------------------- КАБИНЕТ -----------------------------
+    async def cabinet_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
         user = get_user(user_id)
         session = Session()
-        total_earned = session.query(func.sum(Transaction.amount)).filter(Transaction.user_id==user_id, Transaction.type=="task_reward").scalar() or 0
-        total_spent = session.query(func.sum(Transaction.amount)).filter(Transaction.user_id==user_id, Transaction.type=="task_creation").scalar() or 0
-        level_xp_needed = user.level * XP_LEVEL_BASE
+        earned = session.query(func.sum(Transaction.amount)).filter(Transaction.user_id==user_id, Transaction.type=="task_reward").scalar() or 0
+        spent = session.query(func.sum(Transaction.amount)).filter(Transaction.user_id==user_id, Transaction.type=="task_creation").scalar() or 0
+        needed = user.level * XP_LEVEL_BASE
         text = (
             f"👤 *Личный кабинет*\n\n"
             f"ID: `{user_id}`\n"
-            f"⭐ Уровень: {user.level} (XP: {user.xp}/{level_xp_needed})\n"
+            f"⭐ Уровень: {user.level} (XP: {user.xp}/{needed})\n"
             f"💰 Баланс: {user.balance} {CURRENCY}\n"
-            f"📈 Заработано: {total_earned} {CURRENCY}\n"
-            f"📉 Потрачено: {total_spent} {CURRENCY}\n\n"
+            f"📈 Заработано: {earned} {CURRENCY}\n"
+            f"📉 Потрачено: {spent} {CURRENCY}\n\n"
             f"📎 Реферальная ссылка:\nhttps://t.me/{context.bot.username}?start=ref_{user.referral_code}"
         )
         keyboard = [
-            [InlineKeyboardButton("📈 Пополнить", callback_data="deposit")],
-            [InlineKeyboardButton("💬 Рефералы", callback_data="referral_info")],
-            [InlineKeyboardButton("✅ Уровни", callback_data="level_info")],
+            [InlineKeyboardButton("📈 Пополнить", callback_data="deposit_placeholder")],
+            [InlineKeyboardButton("💬 Рефералы", callback_data="referral_placeholder")],
+            [InlineKeyboardButton("✅ Уровни", callback_data="level_placeholder")],
             [InlineKeyboardButton("🟢 Мои задания", callback_data="my_tasks")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")]
         ]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
         session.close()
 
-    async def my_tasks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def my_tasks_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         user_id = query.from_user.id
@@ -937,7 +887,7 @@ class PromoBot:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_keyboard("cabinet"))
         session.close()
 
-    async def delete_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
+    async def delete_task_cb(self, update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
         query = update.callback_query
         user_id = query.from_user.id
         session = Session()
@@ -956,16 +906,15 @@ class PromoBot:
         session.close()
 
     # ----------------------------- ФОНОВЫЕ ЗАДАЧИ -----------------------------
-    async def check_unsubscribes(self):
+    async def check_unsub(self):
         if not self.application:
             return
         session = Session()
         now = datetime.now()
-        subs = session.query(Subscription).filter(Subscription.check_until > now).all()
-        for sub in subs:
+        for sub in session.query(Subscription).filter(Subscription.check_until > now).all():
             try:
                 member = await self.application.bot.get_chat_member(int(sub.channel_id), sub.user_id)
-                if member.status not in ("member", "administrator", "creator"):
+                if member.status not in ("member","administrator","creator"):
                     user = session.query(User).filter_by(user_id=sub.user_id).first()
                     if user and not user.is_banned:
                         user.is_banned = True
@@ -976,24 +925,20 @@ class PromoBot:
                 pass
         session.close()
 
-    async def auto_approve_tasks(self):
+    async def auto_approve(self):
         if not self.application:
             return
         session = Session()
         timeout = datetime.now() - timedelta(hours=AUTO_APPROVE_HOURS)
-        completions = session.query(TaskCompletion).filter(
-            TaskCompletion.is_verified == False,
-            TaskCompletion.completed_at < timeout
-        ).all()
-        for comp in completions:
+        for comp in session.query(TaskCompletion).filter(TaskCompletion.is_verified == False, TaskCompletion.completed_at < timeout).all():
             task = session.query(Task).filter_by(id=comp.task_id).first()
             if task and task.is_active:
                 update_balance(comp.user_id, task.reward, is_earned=True)
-                add_transaction(comp.user_id, task.reward, "task_reward", f"Автоодобрение задания {task.id}")
+                add_transaction(comp.user_id, task.reward, "task_reward", "Автоодобрение")
                 comp.is_verified = True
                 comp.approved_at = datetime.now()
                 task.current_completions += 1
-                if task.type in ("channel", "group"):
+                if task.type in ("channel","group"):
                     sub = Subscription(user_id=comp.user_id, channel_id=task.target_id, task_id=task.id,
                                        check_until=datetime.now() + timedelta(days=UNSUBSCRIBE_BAN_DAYS))
                     session.add(sub)
@@ -1001,119 +946,114 @@ class PromoBot:
                 await self.application.bot.send_message(comp.user_id, f"✅ Ваше задание #{task.id} автоматически одобрено! +{task.reward}{CURRENCY}")
         session.close()
 
-    async def clean_expired_tasks(self):
+    async def clean_expired(self):
         if not self.application:
             return
         session = Session()
-        expired = session.query(Task).filter(Task.expires_at < datetime.now(), Task.is_active == True).all()
-        for task in expired:
+        for task in session.query(Task).filter(Task.expires_at < datetime.now(), Task.is_active == True).all():
             task.is_active = False
         session.commit()
         session.close()
 
     # ----------------------------- ЗАПУСК -----------------------------
-    async def set_commands(self, application: Application):
-        commands = [
+    async def set_commands(self, app: Application):
+        await app.bot.set_my_commands([
             BotCommand("start", "Главное меню"),
             BotCommand("help", "Помощь"),
             BotCommand("stats", "Статистика"),
             BotCommand("rules", "Правила"),
             BotCommand("support", "Поддержка"),
             BotCommand("claim", "Активировать чек")
-        ]
-        await application.bot.set_my_commands(commands)
+        ])
 
     def run(self):
-        application = Application.builder().token(BOT_TOKEN).build()
-        self.application = application
+        app = Application.builder().token(BOT_TOKEN).build()
+        self.application = app
 
-        # Регистрация команд
-        application.add_handler(CommandHandler("start", self.start))
-        application.add_handler(CommandHandler("help", self.help_command))
-        application.add_handler(CommandHandler("stats", self.stats_command))
-        application.add_handler(CommandHandler("rules", self.rules_command))
-        application.add_handler(CommandHandler("support", self.support_command))
-        application.add_handler(CommandHandler("claim", self.claim_check))
+        # Команды
+        app.add_handler(CommandHandler("start", self.start))
+        app.add_handler(CommandHandler("help", self.help_command))
+        app.add_handler(CommandHandler("stats", self.stats_command))
+        app.add_handler(CommandHandler("rules", self.rules_command))
+        app.add_handler(CommandHandler("support", self.support_command))
+        app.add_handler(CommandHandler("claim", self.claim_check_cmd))
 
-        # ConversationHandler для создания заданий
-        ad_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(self.start_ad_creation, pattern="^ad_")],
+        # Conversation для рекламы
+        adv_conv = ConversationHandler(
+            entry_points=[CallbackQueryHandler(self.ad_start, pattern="^ad_")],
             states={
-                "awaiting_target": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_target)],
-                "awaiting_reward": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_reward)],
-                "awaiting_max": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_max)]
+                "awaiting_target": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.ad_target)],
+                "awaiting_reward": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.ad_reward)],
+                "awaiting_max": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.ad_max)]
             },
             fallbacks=[],
             per_message=False
         )
-        application.add_handler(ad_conv)
+        app.add_handler(adv_conv)
 
-        # ConversationHandler для чеков
+        # Conversation для чеков
         check_conv = ConversationHandler(
             entry_points=[
-                CallbackQueryHandler(self.create_personal_check, pattern="^create_personal_check$"),
-                CallbackQueryHandler(self.create_multi_check, pattern="^create_multi_check$")
+                CallbackQueryHandler(self.check_create_personal, pattern="^create_personal_check$"),
+                CallbackQueryHandler(self.check_create_multi, pattern="^create_multi_check$")
             ],
             states={
-                "await_check_amount": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_check_amount)],
-                "await_personal_recipient": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_personal_recipient)],
-                "await_multi_count": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_multi_count)],
-                "await_multi_channel": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.receive_multi_channel)]
+                "await_check_amount": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.check_amount)],
+                "await_personal_recipient": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.check_personal_recipient)],
+                "await_multi_count": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.check_multi_count)],
+                "await_multi_channel": [MessageHandler(filters.TEXT & ~filters.COMMAND, self.check_multi_channel)]
             },
             fallbacks=[],
             per_message=False
         )
-        application.add_handler(check_conv)
+        app.add_handler(check_conv)
 
         # Обработчики кнопок
-        application.add_handler(CallbackQueryHandler(self.main_menu, pattern="^main_menu$"))
-        application.add_handler(CallbackQueryHandler(self.earn_menu, pattern="^earn$"))
-        application.add_handler(CallbackQueryHandler(self.advertise_menu, pattern="^advertise$"))
-        application.add_handler(CallbackQueryHandler(self.checks_menu, pattern="^checks_menu$"))
-        application.add_handler(CallbackQueryHandler(self.cabinet, pattern="^cabinet$"))
-        application.add_handler(CallbackQueryHandler(self.my_tasks, pattern="^my_tasks$"))
-        application.add_handler(CallbackQueryHandler(self.delete_task, pattern="^delete_task_"))
+        app.add_handler(CallbackQueryHandler(self.main_menu_cb, pattern="^main_menu$"))
+        app.add_handler(CallbackQueryHandler(self.earn_menu, pattern="^earn$"))
+        app.add_handler(CallbackQueryHandler(self.advertise_menu_cb, pattern="^advertise$"))
+        app.add_handler(CallbackQueryHandler(self.checks_menu_cb, pattern="^checks_menu$"))
+        app.add_handler(CallbackQueryHandler(self.cabinet_cb, pattern="^cabinet$"))
+        app.add_handler(CallbackQueryHandler(self.my_tasks_cb, pattern="^my_tasks$"))
+        app.add_handler(CallbackQueryHandler(self.delete_task_cb, pattern="^delete_task_"))
 
-        # Обработчики выбора типа заданий
-        for typ in ["channels", "groups", "views", "reactions", "bots", "boost"]:
-            application.add_handler(CallbackQueryHandler(lambda u,c: self.show_tasks_by_type(u,c,typ.replace("views","post").replace("reactions","reaction").replace("bots","bot").replace("channels","channel").replace("groups","group")), pattern=f"^earn_{typ}$"))
+        # Типы заданий в заработать
+        for t, dbtype in [("channels","channel"),("groups","group"),("views","post"),("reactions","reaction"),("bots","bot"),("boost","boost")]:
+            app.add_handler(CallbackQueryHandler(lambda u,c, typ=dbtype: self.show_tasks(u,c,typ), pattern=f"^earn_{t}$"))
 
         # Пагинация
         for typ in ["channel","group","post","reaction","bot","boost"]:
-            application.add_handler(CallbackQueryHandler(lambda u,c: self.paginate_tasks(u,c,typ,"next"), pattern=f"^tasks_{typ}_next$"))
-            application.add_handler(CallbackQueryHandler(lambda u,c: self.paginate_tasks(u,c,typ,"prev"), pattern=f"^tasks_{typ}_prev$"))
+            app.add_handler(CallbackQueryHandler(lambda u,c, t=typ: self.tasks_paginate(u,c,t,"next"), pattern=f"^tasks_{typ}_next$"))
+            app.add_handler(CallbackQueryHandler(lambda u,c, t=typ: self.tasks_paginate(u,c,t,"prev"), pattern=f"^tasks_{typ}_prev$"))
 
-        # Проверка подписки и выполнение
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.verify_subscription(u,c,int(c.data.split("_")[2])), pattern="^verify_sub_"))
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.handle_view_task(u,c,int(c.data.split("_")[2])), pattern="^do_view_"))
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.handle_reaction_task(u,c,int(c.data.split("_")[2])), pattern="^do_reaction_"))
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.handle_boost_task(u,c,int(c.data.split("_")[2])), pattern="^do_boost_"))
+        # Проверка и выполнение
+        app.add_handler(CallbackQueryHandler(lambda u,c: self.verify_sub(u,c,int(c.data.split("_")[2])), pattern="^verify_sub_"))
+        app.add_handler(CallbackQueryHandler(lambda u,c: self.do_view(u,c,int(c.data.split("_")[2])), pattern="^do_view_"))
+        app.add_handler(CallbackQueryHandler(lambda u,c: self.do_reaction(u,c,int(c.data.split("_")[2])), pattern="^do_reaction_"))
+        app.add_handler(CallbackQueryHandler(lambda u,c: self.do_boost(u,c,int(c.data.split("_")[2])), pattern="^do_boost_"))
 
         # Одобрение/отклонение
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.approve_completion(u,c,int(c.data.split("_")[1])), pattern="^approve_"))
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.reject_completion(u,c,int(c.data.split("_")[1])), pattern="^reject_"))
+        app.add_handler(CallbackQueryHandler(lambda u,c: self.approve_cb(u,c,int(c.data.split("_")[1])), pattern="^approve_"))
+        app.add_handler(CallbackQueryHandler(lambda u,c: self.reject_cb(u,c,int(c.data.split("_")[1])), pattern="^reject_"))
 
-        # Прочие кнопки
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.cabinet(u,c), pattern="^my_tasks$"))
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.main_menu(u,c), pattern="^deposit$"))
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.main_menu(u,c), pattern="^referral_info$"))
-        application.add_handler(CallbackQueryHandler(lambda u,c: self.main_menu(u,c), pattern="^level_info$"))
+        # Заглушки для кабинета (popup)
+        for p in ["deposit_placeholder","referral_placeholder","level_placeholder"]:
+            app.add_handler(CallbackQueryHandler(lambda u,c: u.callback_query.answer("В разработке", show_alert=True), pattern=f"^{p}$"))
 
-        # Приём фото
-        application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        # Фото
+        app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
 
         # Фоновые задачи
-        self.scheduler.add_job(self.check_unsubscribes, 'interval', hours=6)
-        self.scheduler.add_job(self.auto_approve_tasks, 'interval', hours=1)
-        self.scheduler.add_job(self.clean_expired_tasks, 'interval', hours=12)
+        self.scheduler.add_job(self.check_unsub, 'interval', hours=6)
+        self.scheduler.add_job(self.auto_approve, 'interval', hours=1)
+        self.scheduler.add_job(self.clean_expired, 'interval', hours=12)
         self.scheduler.start()
 
-        application.post_init = self.set_commands
+        app.post_init = self.set_commands
 
         logging.basicConfig(level=logging.INFO)
-        logger = logging.getLogger(__name__)
-        logger.info("Бот запущен")
-        application.run_polling()
+        logging.info("Бот запущен")
+        app.run_polling()
 
 if __name__ == "__main__":
     PromoBot().run()
